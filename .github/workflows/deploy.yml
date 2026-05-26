@@ -3,27 +3,20 @@ name: Deploy to Hugging Face Spaces
 on:
   push:
     branches:
-      - main # trigger saat push ke branch main
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout kode
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # ambil semua history git
+          fetch-depth: 0
 
-      - name: Push ke Hugging Face Spaces
+      - name: Push ke Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Install git-lfs (dibutuhkan HF)
-          git lfs install
-
-          # Tambahkan HF remote dengan token
-          git remote add huggingface https://huggingface.co/spaces/adityaUHU/my-fastapi-analisis
-
-          # Push ke HF (force supaya tidak konflik history)
+          git remote add huggingface https://adityaUHU:$HF_TOKEN@huggingface.co/spaces/adityaUHU/my-fastapi-analisis
           git push huggingface main --force
