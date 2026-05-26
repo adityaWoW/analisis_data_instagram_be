@@ -91,11 +91,11 @@ def get_loader() -> instaloader.Instaloader:
     })
     L.context.username = IG_USERNAME
 
-    try:
-        L.context.graphql_query("d6f4427fbe92d846298cf93df0b937d3", {})
-        print(f"Session aktif — login sebagai: {IG_USERNAME}")
-    except Exception as e:
-        print(f"Peringatan: verifikasi session gagal ({e}). Melanjutkan...")
+    # try:
+    #     L.context.graphql_query("d6f4427fbe92d846298cf93df0b937d3", {})
+    #     print(f"Session aktif — login sebagai: {IG_USERNAME}")
+    # except Exception as e:
+    #     print(f"Peringatan: verifikasi session gagal ({e}). Melanjutkan...")
 
     _loader_instance = L
     return L
@@ -263,7 +263,7 @@ def _safe_int_val(val) -> int:
 
 # ─── MAIN ─────────────────────────────────────────────────────
 
-def analyze_excel(spreadsheet_id: str, sheet_name: str, max_workers: int = 3, delay_range: tuple = (1.0, 2.5)):
+def analyze_excel(spreadsheet_id: str, sheet_name: str, max_workers: int = 1, delay_range: tuple = (4.0, 7.0)):
     try:
         # ── STEP 1: Ambil semua data dari sheet menggunakan Sheets API ──
         range_to_fetch = f"'{sheet_name}'!A1:ZZ"
