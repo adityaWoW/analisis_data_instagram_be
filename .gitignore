@@ -1,0 +1,50 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Environment variables
+.env
+.env.*
+credentials.json
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Build files
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# SQLite
+*.sqlite3
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uvicorn
+uvicorn.log
+
+# Alembic
+alembic/versions/*.pyc
