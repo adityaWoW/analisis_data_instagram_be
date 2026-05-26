@@ -16,7 +16,6 @@ from app.google_drive import (
 
 from app.analyzer import analyze_excel
 from app.model import AnalyzeRequest
-from app.config import HOST, PORT
 
 app = FastAPI()
 
@@ -161,8 +160,8 @@ async def save_instagram_session(payload: dict):
 if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
-        host=HOST,
-        port=PORT,
+        host="0.0.0.0",  # hardcode langsung
+        port=7860,        # hardcode langsung
         reload=True,
         log_level="info",
     )
