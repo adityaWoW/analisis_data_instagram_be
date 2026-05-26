@@ -1,18 +1,29 @@
 import io
+import os
+import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import openpyxl
 
 SCOPES = [
-    'https://www.googleapis.com/auth/drive',              
-    'https://www.googleapis.com/auth/spreadsheets' 
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets'
 ]
 
-credentials = service_account.Credentials.from_service_account_file(
-    'credentials.json',
+# ─── BACA CREDENTIALS DARI ENV VAR (bukan dari file) ──────────
+credentials_json = os.environ.get("GOOGLE_CREDENTIALS")
+
+if credentials_json is None:
+    raise ValueError("Environment variable GOOGLE_CREDENTIALS tidak ditemukan!")
+
+credentials_info = json.loads(credentials_json)
+
+credentials = service_account.Credentials.from_service_account_info(
+    credentials_info,
     scopes=SCOPES
 )
+# ──────────────────────────────────────────────────────────────
 
 drive_service  = build('drive',  'v3', credentials=credentials)
 sheets_service = build('sheets', 'v4', credentials=credentials)
