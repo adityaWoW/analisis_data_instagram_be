@@ -67,6 +67,12 @@ def get_loader() -> instaloader.Instaloader:
         post_metadata_txt_pattern="",
         compress_json=False,
     )
+
+    def fake_graphql_query(*args, **kwargs):
+        print("[BYPASS] Membungkam otomatisasi GraphQL Query bawaan Instaloader.")
+        return {"data": {"user": {"username": IG_USERNAME}}} # Mengembalikan mock response sukses
+        
+    L.context.graphql_query = fake_graphql_query
     
     # Memasukkan seluruh value dari cookies.json ke session Instaloader
     L.context._session.cookies.update({
@@ -77,7 +83,6 @@ def get_loader() -> instaloader.Instaloader:
         "mid"        : ig_cookies.get("mid", ""),
     })
     
-    # Update headers menggunakan csrftoken yang dinamis dari cookies
     L.context._session.headers.update({
         "x-csrftoken"      : ig_cookies.get("csrftoken", ""),
         "x-ig-app-id"      : "936619743392459",
@@ -86,8 +91,11 @@ def get_loader() -> instaloader.Instaloader:
         "user-agent"       : (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
+            "Chrome/120.0.0.0 Safari/537.36"
         ),
+        "accept"           : "*/*",
+        "accept-language"  : "en-US,en;q=0.9,id;q=0.8",
+        "origin"           : "https://www.instagram.com"
     })
     L.context.username = IG_USERNAME
 
