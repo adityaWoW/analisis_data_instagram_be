@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import os
+import httpx
 from app.google_drive import save_cookies_to_drive
 
 from app.google_drive import (
@@ -112,20 +113,32 @@ async def save_instagram_session(payload: dict):
         filtered = [c for c in cookies if c.get("name") in IMPORTANT_COOKIES]
 
         if not filtered:
-            raise HTTPException(status_code=400, detail="Tidak ada cookies valid ditemukan")
+            raise HTTPException(status_code=400, detail="Tidak ada cookies valid")
 
-        # Simpan ke memory (selama container hidup)
-        os.environ["INSTAGRAM_COOKIES"] = json.dumps(filtered)
+        cookies_json = json.dumps(filtered)
 
-        # Simpan ke Google Drive (permanen)
-        save_cookies_to_drive(filtered)
+        # Simpan ke env var memory dulu
+        os.environ["INSTAGRAM_COOKIES"] = cookies_json
 
-        # Reset loader agar pakai cookies baru
+        # Update HF Secret via API
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            async with httpx.AsyncClient() as client:
+                resp = await client.put(
+                    "https://huggingface.co/api/spaces/adityaUHU/my-fastapi-analisis/secrets",
+                    headers={"Authorization": f"Bearer {hf_token}"},
+                    json={"key": "INSTAGRAM_COOKIES", "value": cookies_json}
+                )
+                if resp.status_code == 200:
+                    print(f"[HF SECRET] Cookies berhasil disimpan ke HF Secrets")
+                else:
+                    print(f"[HF SECRET] Gagal: {resp.status_code} {resp.text}")
+
+        # Reset loader
         from app import analyzer
         analyzer._loader_instance = None
 
-        print(f"[SESSION] {len(filtered)} cookies disimpan ke env + Google Drive")
-        return {"success": True, "message": "Session saved permanently", "total": len(filtered)}
+        return {"success": True, "message": "Session saved", "total": len(filtered)}
 
     except HTTPException:
         raise
