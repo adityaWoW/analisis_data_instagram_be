@@ -4,7 +4,6 @@ import uvicorn
 import json
 import os
 import httpx
-from app.google_drive import save_cookies_to_drive
 
 from app.google_drive import (
     list_files,
@@ -24,22 +23,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── LIFECYCLE / STARTUP EVENT ───────────────────────────────
-# Memastikan folder storage selalu siap saat container menyala
 @app.on_event("startup")
 def startup_event():
     os.makedirs("storage", exist_ok=True)
     print("[STARTUP] Folder 'storage' siap digunakan.")
 
 
-# ─── ROOT FILES ───────────────────────────────────────────────
 @app.get("/files")
 def get_files():
     files = list_files()
     return {"success": True, "data": files}
 
 
-# ─── OPEN FOLDER ──────────────────────────────────────────────
 @app.get("/files/{folder_id}")
 def get_folder_files(folder_id: str):
     try:
@@ -49,7 +44,6 @@ def get_folder_files(folder_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── LIST SHEETS ──────────────────────────────────────────────
 @app.get("/files/{file_id}/sheets")
 def get_sheets(file_id: str):
     try:
@@ -59,19 +53,20 @@ def get_sheets(file_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── ANALYZE + UPDATE LANGSUNG KE DRIVE ───────────────────────
 @app.post("/analyze")
 def analyze(request: AnalyzeRequest):
     try:
-        print(f"[ANALYZE] Memproses secara langsung via Sheets API. ID: {request.file_id}, Sheet: {request.sheet_name}")
-        
-        # Validasi tambahan sebelum dilempar ke analyzer
-        if not os.path.exists("storage/cookies.json"):
-            print("[⚠️ WARNING] cookies.json belum ada saat /analyze dipanggil!")
-            # Opsional: Anda bisa mengembalikan error ke FE agar user tahu harus login IG dulu
+        print(f"[ANALYZE] ID: {request.file_id}, Sheet: {request.sheet_name}")
+
+        # Validasi cookies tersedia (dari env var atau file lokal)
+        has_cookies = (
+            bool(os.environ.get("INSTAGRAM_COOKIES")) or
+            os.path.exists("storage/cookies.json")
+        )
+        if not has_cookies:
             raise HTTPException(
-                status_code=400, 
-                detail="Sesi Instagram belum tersimpan. Silakan simpan sesi Instagram terlebih dahulu di frontend."
+                status_code=400,
+                detail="Sesi Instagram belum tersimpan. Silakan simpan sesi Instagram terlebih dahulu."
             )
 
         result = analyze_excel(
@@ -82,7 +77,7 @@ def analyze(request: AnalyzeRequest):
         if result.get("status") != "Success":
             raise HTTPException(
                 status_code=422,
-                detail=result.get("pesan", "analyze_sheets_api gagal tanpa pesan error.")
+                detail=result.get("pesan", "Analyze gagal tanpa pesan error.")
             )
 
         return {
@@ -104,7 +99,6 @@ def analyze(request: AnalyzeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── SAVE INSTAGRAM SESSION ─────────────────────────────
 @app.post("/api/instagram/save-session")
 async def save_instagram_session(payload: dict):
     try:
@@ -117,10 +111,10 @@ async def save_instagram_session(payload: dict):
 
         cookies_json = json.dumps(filtered)
 
-        # Simpan ke env var memory dulu
+        # Simpan ke memory
         os.environ["INSTAGRAM_COOKIES"] = cookies_json
 
-        # Update HF Secret via API
+        # Simpan permanen ke HF Secrets
         hf_token = os.environ.get("HF_TOKEN")
         if hf_token:
             async with httpx.AsyncClient() as client:
@@ -130,11 +124,13 @@ async def save_instagram_session(payload: dict):
                     json={"key": "INSTAGRAM_COOKIES", "value": cookies_json}
                 )
                 if resp.status_code == 200:
-                    print(f"[HF SECRET] Cookies berhasil disimpan ke HF Secrets")
+                    print("[HF SECRET] Cookies berhasil disimpan ke HF Secrets")
                 else:
                     print(f"[HF SECRET] Gagal: {resp.status_code} {resp.text}")
+        else:
+            print("[HF SECRET] HF_TOKEN tidak ditemukan, cookies hanya di memory!")
 
-        # Reset loader
+        # Reset loader agar pakai cookies baru
         from app import analyzer
         analyzer._loader_instance = None
 
@@ -145,6 +141,7 @@ async def save_instagram_session(payload: dict):
     except Exception as e:
         print(f"[SAVE SESSION ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     uvicorn.run(
