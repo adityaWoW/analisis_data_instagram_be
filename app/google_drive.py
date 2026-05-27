@@ -6,6 +6,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import openpyxl
 
+COOKIES_FILE_NAME = "instagram_cookies.json"
+
 SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/spreadsheets'
@@ -221,4 +223,52 @@ def get_spreadsheet_values(spreadsheet_id: str, range_name: str) -> list:
         spreadsheetId=spreadsheet_id,
         range=range_name
     ).execute()
-    return result.get('values', [])        
+    return result.get('values', [])     
+
+
+
+def save_cookies_to_drive(cookies: list) -> None:
+    """Simpan cookies Instagram ke Google Drive secara permanen"""
+    content = json.dumps(cookies, indent=2).encode("utf-8")
+    stream = io.BytesIO(content)
+
+    # Cek apakah file sudah ada
+    results = drive_service.files().list(
+        q=f"name='{COOKIES_FILE_NAME}' and trashed=false",
+        fields="files(id, name)"
+    ).execute()
+    existing = results.get("files", [])
+
+    media = MediaIoBaseUpload(stream, mimetype="application/json", resumable=False)
+
+    if existing:
+        drive_service.files().update(
+            fileId=existing[0]["id"],
+            media_body=media
+        ).execute()
+        print(f"[DRIVE] Cookies diupdate. ID: {existing[0]['id']}")
+    else:
+        file = drive_service.files().create(
+            body={"name": COOKIES_FILE_NAME},
+            media_body=media,
+            fields="id"
+        ).execute()
+        print(f"[DRIVE] Cookies disimpan baru. ID: {file.get('id')}")
+
+
+def load_cookies_from_drive() -> list:
+    """Baca cookies Instagram dari Google Drive"""
+    results = drive_service.files().list(
+        q=f"name='{COOKIES_FILE_NAME}' and trashed=false",
+        fields="files(id)"
+    ).execute()
+
+    files = results.get("files", [])
+    if not files:
+        print("[DRIVE] File cookies tidak ditemukan di Drive")
+        return []
+
+    stream = download_file(files[0]["id"], "application/json")
+    cookies = json.loads(stream.read().decode("utf-8"))
+    print(f"[DRIVE] Cookies loaded dari Drive: {len(cookies)} cookies")
+    return cookies   

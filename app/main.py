@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import os
-from app import analyzer
+from app.google_drive import save_cookies_to_drive
 
 from app.google_drive import (
     list_files,
@@ -111,18 +111,26 @@ async def save_instagram_session(payload: dict):
         IMPORTANT_COOKIES = ["sessionid", "csrftoken", "ds_user_id", "ig_did", "mid"]
         filtered = [c for c in cookies if c.get("name") in IMPORTANT_COOKIES]
 
+        if not filtered:
+            raise HTTPException(status_code=400, detail="Tidak ada cookies valid ditemukan")
+
+        # Simpan ke memory (selama container hidup)
         os.environ["INSTAGRAM_COOKIES"] = json.dumps(filtered)
 
-        # ← RESET loader agar rebuild dengan cookies baru
+        # Simpan ke Google Drive (permanen)
+        save_cookies_to_drive(filtered)
+
+        # Reset loader agar pakai cookies baru
+        from app import analyzer
         analyzer._loader_instance = None
-        print(f"[SESSION] Cookies baru disimpan, loader direset. Total: {len(filtered)} cookies")
 
-        os.makedirs("storage", exist_ok=True)
-        with open("storage/cookies.json", "w", encoding="utf-8") as f:
-            json.dump(filtered, f, indent=2, ensure_ascii=False)
+        print(f"[SESSION] {len(filtered)} cookies disimpan ke env + Google Drive")
+        return {"success": True, "message": "Session saved permanently", "total": len(filtered)}
 
-        return {"success": True, "message": "Session saved & loader reset", "total": len(filtered)}
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[SAVE SESSION ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

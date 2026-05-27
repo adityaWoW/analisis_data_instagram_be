@@ -14,38 +14,41 @@ IG_USERNAME   = "Ace.Shuttle"
 # ─── LOAD INSTAGRAM COOKIES ───────────────────
 
 def load_instagram_cookies():
-    # Coba dari environment variable dulu (untuk HF Spaces)
+    # 1. Coba dari env var (sudah di-load sebelumnya di session ini)
     cookies_env = os.environ.get("INSTAGRAM_COOKIES")
     if cookies_env:
         try:
             cookies = json.loads(cookies_env)
             cookie_map = {c["name"]: c["value"] for c in cookies}
-            print("✅ Cookies loaded dari environment variable")
-            return {
-                "sessionid":  cookie_map.get("sessionid", ""),
-                "csrftoken":  cookie_map.get("csrftoken", ""),
-                "ds_user_id": cookie_map.get("ds_user_id", ""),
-                "mid":        cookie_map.get("mid", ""),
-                "ig_did":     cookie_map.get("ig_did", ""),
-            }
+            if cookie_map.get("sessionid"):
+                print(f"✅ Cookies dari env var | sessionid: {cookie_map['sessionid'][:10]}...")
+                return cookie_map
         except Exception as e:
-            print(f"⚠️ Gagal parse INSTAGRAM_COOKIES env: {e}")
+            print(f"⚠️ Gagal parse env var: {e}")
 
-    # Fallback ke file lokal (untuk development)
+    # 2. Coba dari Google Drive (permanen, survive restart)
+    try:
+        from app.google_drive import load_cookies_from_drive
+        cookies = load_cookies_from_drive()
+        if cookies:
+            cookie_map = {c["name"]: c["value"] for c in cookies}
+            if cookie_map.get("sessionid"):
+                # Cache ke env var agar request berikutnya lebih cepat
+                os.environ["INSTAGRAM_COOKIES"] = json.dumps(cookies)
+                print(f"✅ Cookies dari Google Drive | sessionid: {cookie_map['sessionid'][:10]}...")
+                return cookie_map
+    except Exception as e:
+        print(f"⚠️ Gagal load dari Drive: {e}")
+
+    # 3. Fallback file lokal (untuk development)
     try:
         with open("storage/cookies.json", "r", encoding="utf-8") as f:
             cookies = json.load(f)
         cookie_map = {c["name"]: c["value"] for c in cookies}
-        print("✅ Cookies loaded dari file lokal")
-        return {
-            "sessionid":  cookie_map.get("sessionid", ""),
-            "csrftoken":  cookie_map.get("csrftoken", ""),
-            "ds_user_id": cookie_map.get("ds_user_id", ""),
-            "mid":        cookie_map.get("mid", ""),
-            "ig_did":     cookie_map.get("ig_did", ""),
-        }
+        print("✅ Cookies dari file lokal")
+        return cookie_map
     except FileNotFoundError:
-        print("❌ cookies.json tidak ditemukan!")
+        print("❌ Tidak ada cookies tersedia!")
         return {}
 
 # ─── LOADER SINGLETON ─────────────────────────────────────────
