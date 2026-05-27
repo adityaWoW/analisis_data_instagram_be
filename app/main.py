@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import os
+from app import analyzer
 
 from app.google_drive import (
     list_files,
@@ -110,22 +111,19 @@ async def save_instagram_session(payload: dict):
         IMPORTANT_COOKIES = ["sessionid", "csrftoken", "ds_user_id", "ig_did", "mid"]
         filtered = [c for c in cookies if c.get("name") in IMPORTANT_COOKIES]
 
-        # Simpan ke env var (untuk HF Spaces)
         os.environ["INSTAGRAM_COOKIES"] = json.dumps(filtered)
 
-        # Reset loader agar pakai cookies baru
-        global _loader_instance
-        _loader_instance = None  # ← import dari analyzer.py jika perlu
+        # ← RESET loader agar rebuild dengan cookies baru
+        analyzer._loader_instance = None
+        print(f"[SESSION] Cookies baru disimpan, loader direset. Total: {len(filtered)} cookies")
 
-        # Tetap simpan ke file untuk fallback lokal
         os.makedirs("storage", exist_ok=True)
         with open("storage/cookies.json", "w", encoding="utf-8") as f:
             json.dump(filtered, f, indent=2, ensure_ascii=False)
 
-        return {"success": True, "message": "Session saved", "total": len(filtered)}
+        return {"success": True, "message": "Session saved & loader reset", "total": len(filtered)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     uvicorn.run(

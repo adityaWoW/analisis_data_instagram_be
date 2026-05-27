@@ -7,7 +7,6 @@ import instaloader
 from threading import Lock
 from app.google_drive import get_spreadsheet_values, update_spreadsheet_values
 
-
 # ─── KONFIGURASI — GANTI DI SINI ─────────────────────────────
 IG_USERNAME   = "Ace.Shuttle"
 # ─────────────────────────────────────────────────────────────
@@ -127,10 +126,6 @@ def extract_shortcode(url: str) -> str | None:
 
 
 def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
-    """
-    Ambil data post via endpoint non-GraphQL.
-    Tidak ada fallback ke Post.from_shortcode agar tidak trigger GraphQL timeout.
-    """
     urls_to_try = [
         f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis",
         f"https://www.instagram.com/reel/{shortcode}/?__a=1&__d=dis",
@@ -139,6 +134,12 @@ def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
     for url in urls_to_try:
         try:
             response = loader.context._session.get(url, timeout=15)
+            
+            # ← TAMBAH LOG INI untuk debug
+            print(f"  [DEBUG] {shortcode} | status={response.status_code} | len={len(response.text)}")
+            if response.status_code != 200:
+                print(f"  [DEBUG] response: {response.text[:200]}")
+            
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("items", [])
@@ -150,12 +151,12 @@ def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
                         likes    = item.get("like_count", 0)
                         comments = item.get("comment_count", 0)
                     return MockPost()
+                else:
+                    print(f"  [DEBUG] items kosong, keys: {list(data.keys())}")
         except Exception as e:
-            print(f"  [WARN] {url} gagal: {e}")
+            print(f"  [WARN] {url} gagal: {type(e).__name__}: {e}")
             continue
 
-    # Jika semua endpoint gagal, return mock kosong daripada GraphQL
-    print(f"  [SKIP] {shortcode} tidak bisa diambil, return 0")
     class EmptyPost:
         is_video = True
         _full_metadata = {}
