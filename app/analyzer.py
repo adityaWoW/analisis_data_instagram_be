@@ -2,19 +2,17 @@ import pandas as pd
 import json
 import os
 import io, re, time, random
-import asyncio  # Ditambahkan untuk implementasi async murni
+import asyncio
 import instaloader
 from threading import Lock
 from app.google_drive import get_spreadsheet_values, update_spreadsheet_values
 
-# ─── KONFIGURASI — GANTI DI SINI ─────────────────────────────
-IG_USERNAME   = "Ace.Shuttle"
-# ─────────────────────────────────────────────────────────────
+IG_USERNAME = "Ace.Shuttle"
 
-# ─── LOAD INSTAGRAM COOKIES ───────────────────
+# ─── LOAD INSTAGRAM COOKIES ───────────────────────────────────
 
 def load_instagram_cookies():
-    # 1. Coba dari env var (sudah di-load sebelumnya di session ini)
+    # 1. Dari HF Secret / env var
     cookies_env = os.environ.get("INSTAGRAM_COOKIES")
     if cookies_env:
         try:
@@ -23,51 +21,47 @@ def load_instagram_cookies():
             if cookie_map.get("sessionid"):
                 print(f"✅ Cookies dari env var | sessionid: {cookie_map['sessionid'][:10]}...")
                 return cookie_map
+            else:
+                print("⚠️ Env var ada tapi sessionid kosong!")
         except Exception as e:
             print(f"⚠️ Gagal parse env var: {e}")
 
-    # 2. Coba dari Google Drive (permanen, survive restart)
-    try:
-        from app.google_drive import load_cookies_from_drive
-        cookies = load_cookies_from_drive()
-        if cookies:
-            cookie_map = {c["name"]: c["value"] for c in cookies}
-            if cookie_map.get("sessionid"):
-                # Cache ke env var agar request berikutnya lebih cepat
-                os.environ["INSTAGRAM_COOKIES"] = json.dumps(cookies)
-                print(f"✅ Cookies dari Google Drive | sessionid: {cookie_map['sessionid'][:10]}...")
-                return cookie_map
-    except Exception as e:
-        print(f"⚠️ Gagal load dari Drive: {e}")
-
-    # 3. Fallback file lokal (untuk development)
+    # 2. Fallback file lokal (development only)
     try:
         with open("storage/cookies.json", "r", encoding="utf-8") as f:
             cookies = json.load(f)
         cookie_map = {c["name"]: c["value"] for c in cookies}
-        print("✅ Cookies dari file lokal")
-        return cookie_map
+        if cookie_map.get("sessionid"):
+            print("✅ Cookies dari file lokal")
+            return cookie_map
     except FileNotFoundError:
-        print("❌ Tidak ada cookies tersedia!")
-        return {}
+        pass
+
+    print("❌ Tidak ada cookies tersedia!")
+    return {}
+
 
 # ─── LOADER SINGLETON ─────────────────────────────────────────
 _loader_instance = None
+
+def reset_loader():
+    global _loader_instance
+    _loader_instance = None
+    print("[LOADER] Instance direset")
 
 def get_loader() -> instaloader.Instaloader:
     global _loader_instance
     if _loader_instance is not None:
         return _loader_instance
 
-    # Ambil data login langsung dari file cookies.json
     ig_cookies = load_instagram_cookies()
-    
+
     if not ig_cookies.get("sessionid"):
-        print("⚠️ Peringatan: sessionid tidak ditemukan di cookies.json. Proses login mungkin gagal.")
+        print("⚠️ sessionid tidak ditemukan, request ke Instagram kemungkinan gagal!")
 
     L = instaloader.Instaloader(
         quiet=True,
-        request_timeout=15,       # turunkan dari 30 → 15 detik
+        request_timeout=15,
         download_pictures=False,
         download_videos=False,
         download_video_thumbnails=False,
@@ -79,46 +73,38 @@ def get_loader() -> instaloader.Instaloader:
     )
 
     def fake_graphql_query(*args, **kwargs):
-        print("[BYPASS] Membungkam otomatisasi GraphQL Query bawaan Instaloader.")
+        print("[BYPASS] GraphQL dibungkam.")
         return {"data": {"user": {"username": IG_USERNAME}}}
-    
-    L.context.max_connection_attempts = 1    
+
+    L.context.max_connection_attempts = 1
     L.context.graphql_query = fake_graphql_query
-    
-    # Memasukkan seluruh value dari cookies.json ke session Instaloader
+
     L.context._session.cookies.update({
-        "sessionid"  : ig_cookies.get("sessionid", ""),
-        "csrftoken"  : ig_cookies.get("csrftoken", ""),
-        "ds_user_id" : ig_cookies.get("ds_user_id", ""),
-        "ig_did"     : ig_cookies.get("ig_did", ""),
-        "mid"        : ig_cookies.get("mid", ""),
+        "sessionid":  ig_cookies.get("sessionid", ""),
+        "csrftoken":  ig_cookies.get("csrftoken", ""),
+        "ds_user_id": ig_cookies.get("ds_user_id", ""),
+        "ig_did":     ig_cookies.get("ig_did", ""),
+        "mid":        ig_cookies.get("mid", ""),
     })
-    
+
     L.context._session.headers.update({
-        "x-csrftoken"      : ig_cookies.get("csrftoken", ""),
-        "x-ig-app-id"      : "936619743392459",
-        "x-requested-with" : "XMLHttpRequest",
-        "referer"          : "https://www.instagram.com/",
-        "user-agent"       : (
+        "x-csrftoken":      ig_cookies.get("csrftoken", ""),
+        "x-ig-app-id":      "936619743392459",
+        "x-requested-with": "XMLHttpRequest",
+        "referer":          "https://www.instagram.com/",
+        "user-agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        "accept"           : "*/*",
-        "accept-language"  : "en-US,en;q=0.9,id;q=0.8",
-        "origin"           : "https://www.instagram.com"
+        "accept":          "*/*",
+        "accept-language": "en-US,en;q=0.9,id;q=0.8",
+        "origin":          "https://www.instagram.com"
     })
     L.context.username = IG_USERNAME
 
-    # try:
-    #     L.context.graphql_query("d6f4427fbe92d846298cf93df0b937d3", {})
-    #     print(f"Session aktif — login sebagai: {IG_USERNAME}")
-    # except Exception as e:
-    #     print(f"Peringatan: verifikasi session gagal ({e}). Melanjutkan...")
-
     _loader_instance = L
     return L
-
 
 # ─── HELPER ───────────────────────────────────────────────────
 

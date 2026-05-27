@@ -4,6 +4,7 @@ import uvicorn
 import json
 import os
 from huggingface_hub import HfApi
+from app.analyzer import reset_loader
 
 from app.google_drive import (
     list_files,
@@ -130,8 +131,7 @@ async def save_instagram_session(payload: dict):
                 print(f"[HF SECRET] Gagal simpan ke HF: {e}")
                 # Tidak raise error — cookies sudah di memory, masih bisa dipakai sementara
 
-        from app import analyzer
-        analyzer._loader_instance = None
+        reset_loader()
 
         return {
             "success": True, 
