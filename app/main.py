@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import os
-import httpx
+from huggingface_hub import HfApi
 
 from app.google_drive import (
     list_files,
@@ -114,27 +114,30 @@ async def save_instagram_session(payload: dict):
         # Simpan ke memory
         os.environ["INSTAGRAM_COOKIES"] = cookies_json
 
-        # Simpan permanen ke HF Secrets
+        # Simpan ke HF via huggingface_hub
         hf_token = os.environ.get("HF_TOKEN")
         if hf_token:
-            async with httpx.AsyncClient() as client:
-                resp = await client.put(
-                    "https://huggingface.co/api/spaces/adityaUHU/my-fastapi-analisis/secrets",
-                    headers={"Authorization": f"Bearer {hf_token}"},
-                    json={"key": "INSTAGRAM_COOKIES", "value": cookies_json}
+            try:
+                api = HfApi(token=hf_token)
+                api.add_space_secret(
+                    repo_id="adityaUHU/my-fastapi-analisis",
+                    key="INSTAGRAM_COOKIES",
+                    value=cookies_json
                 )
-                if resp.status_code == 200:
-                    print("[HF SECRET] Cookies berhasil disimpan ke HF Secrets")
-                else:
-                    print(f"[HF SECRET] Gagal: {resp.status_code} {resp.text}")
-        else:
-            print("[HF SECRET] HF_TOKEN tidak ditemukan, cookies hanya di memory!")
+                print("[HF SECRET] Cookies berhasil disimpan!")
+                # NOTE: ini akan trigger restart container
+            except Exception as e:
+                print(f"[HF SECRET] Gagal simpan ke HF: {e}")
+                # Tidak raise error — cookies sudah di memory, masih bisa dipakai sementara
 
-        # Reset loader agar pakai cookies baru
         from app import analyzer
         analyzer._loader_instance = None
 
-        return {"success": True, "message": "Session saved", "total": len(filtered)}
+        return {
+            "success": True, 
+            "message": "Session saved. Note: container akan restart sebentar untuk apply secret baru.",
+            "total": len(filtered)
+        }
 
     except HTTPException:
         raise
