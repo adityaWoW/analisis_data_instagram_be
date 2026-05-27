@@ -8,11 +8,10 @@ from threading import Lock
 from app.google_drive import get_spreadsheet_values, update_spreadsheet_values
 
 IG_USERNAME = "Ace.Shuttle"
-
+_loader_instance = None
 # ─── LOAD INSTAGRAM COOKIES ───────────────────────────────────
 
 def load_instagram_cookies():
-    # 1. Dari HF Secret / env var
     cookies_env = os.environ.get("INSTAGRAM_COOKIES")
     if cookies_env:
         try:
@@ -21,12 +20,9 @@ def load_instagram_cookies():
             if cookie_map.get("sessionid"):
                 print(f"✅ Cookies dari env var | sessionid: {cookie_map['sessionid'][:10]}...")
                 return cookie_map
-            else:
-                print("⚠️ Env var ada tapi sessionid kosong!")
         except Exception as e:
             print(f"⚠️ Gagal parse env var: {e}")
 
-    # 2. Fallback file lokal (development only)
     try:
         with open("storage/cookies.json", "r", encoding="utf-8") as f:
             cookies = json.load(f)
@@ -39,10 +35,6 @@ def load_instagram_cookies():
 
     print("❌ Tidak ada cookies tersedia!")
     return {}
-
-
-# ─── LOADER SINGLETON ─────────────────────────────────────────
-_loader_instance = None
 
 def reset_loader():
     global _loader_instance
@@ -57,11 +49,11 @@ def get_loader() -> instaloader.Instaloader:
     ig_cookies = load_instagram_cookies()
 
     if not ig_cookies.get("sessionid"):
-        print("⚠️ sessionid tidak ditemukan, request ke Instagram kemungkinan gagal!")
+        print("⚠️ sessionid tidak ditemukan!")
 
     L = instaloader.Instaloader(
         quiet=True,
-        request_timeout=15,
+        request_timeout=30,      # tetap 30 untuk GraphQL fallback
         download_pictures=False,
         download_videos=False,
         download_video_thumbnails=False,
@@ -72,12 +64,8 @@ def get_loader() -> instaloader.Instaloader:
         compress_json=False,
     )
 
-    def fake_graphql_query(*args, **kwargs):
-        print("[BYPASS] GraphQL dibungkam.")
-        return {"data": {"user": {"username": IG_USERNAME}}}
-
+    # Batasi retry jadi 1x saja (bukan 3x default)
     L.context.max_connection_attempts = 1
-    L.context.graphql_query = fake_graphql_query
 
     L.context._session.cookies.update({
         "sessionid":  ig_cookies.get("sessionid", ""),
@@ -95,13 +83,19 @@ def get_loader() -> instaloader.Instaloader:
         "user-agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+            "Chrome/124.0.0.0 Safari/537.36"
         ),
         "accept":          "*/*",
         "accept-language": "en-US,en;q=0.9,id;q=0.8",
-        "origin":          "https://www.instagram.com"
+        "origin":          "https://www.instagram.com",
     })
     L.context.username = IG_USERNAME
+
+    try:
+        L.context.graphql_query("d6f4427fbe92d846298cf93df0b937d3", {})
+        print(f"✅ Session aktif — login sebagai: {IG_USERNAME}")
+    except Exception as e:
+        print(f"⚠️ Verifikasi session gagal ({e}). Melanjutkan...")
 
     _loader_instance = L
     return L
@@ -115,42 +109,49 @@ def extract_shortcode(url: str) -> str | None:
 
 
 def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
-    urls_to_try = [
+    """
+    Coba endpoint cepat dulu (?__a=1).
+    Kalau 404/gagal, fallback ke Post.from_shortcode (GraphQL).
+    """
+    # Coba endpoint JSON langsung dulu (cepat, tanpa GraphQL)
+    for url in [
         f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis",
         f"https://www.instagram.com/reel/{shortcode}/?__a=1&__d=dis",
-    ]
-
-    for url in urls_to_try:
+    ]:
         try:
-            response = loader.context._session.get(url, timeout=15)
-            
-            # ← TAMBAH LOG INI untuk debug
-            print(f"  [DEBUG] {shortcode} | status={response.status_code} | len={len(response.text)}")
-            if response.status_code != 200:
-                print(f"  [DEBUG] response: {response.text[:200]}")
-            
+            response = loader.context._session.get(url, timeout=10)
+            print(f"  [DEBUG] {shortcode} | status={response.status_code}")
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("items", [])
                 if items:
                     item = items[0]
                     class MockPost:
-                        is_video = item.get("media_type", 1) in (2, 1)
+                        is_video       = item.get("media_type", 1) in (1, 2)
                         _full_metadata = item
-                        likes    = item.get("like_count", 0)
-                        comments = item.get("comment_count", 0)
+                        likes          = item.get("like_count", 0)
+                        comments       = item.get("comment_count", 0)
+                    print(f"  [OK-JSON] {shortcode} berhasil via endpoint JSON")
                     return MockPost()
-                else:
-                    print(f"  [DEBUG] items kosong, keys: {list(data.keys())}")
         except Exception as e:
-            print(f"  [WARN] {url} gagal: {type(e).__name__}: {e}")
-            continue
+            print(f"  [WARN] endpoint JSON gagal: {e}")
 
+    # Fallback ke GraphQL (Post.from_shortcode) — lebih lambat tapi lebih andal
+    print(f"  [FALLBACK] {shortcode} → mencoba via GraphQL/Post.from_shortcode")
+    try:
+        post = instaloader.Post.from_shortcode(loader.context, shortcode)
+        post._full_metadata_dict = None
+        print(f"  [OK-GQL] {shortcode} berhasil via GraphQL")
+        return post
+    except Exception as e:
+        print(f"  [FAIL] {shortcode} gagal total: {type(e).__name__}: {e}")
+
+    # Jika semua gagal, return kosong
     class EmptyPost:
-        is_video = True
+        is_video       = True
         _full_metadata = {}
-        likes    = 0
-        comments = 0
+        likes          = 0
+        comments       = 0
     return EmptyPost()
 
 
