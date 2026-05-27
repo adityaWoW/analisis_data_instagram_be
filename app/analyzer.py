@@ -109,18 +109,12 @@ def extract_shortcode(url: str) -> str | None:
 
 
 def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
-    """
-    Coba endpoint cepat dulu (?__a=1).
-    Kalau 404/gagal, fallback ke Post.from_shortcode (GraphQL).
-    """
-    # Coba endpoint JSON langsung dulu (cepat, tanpa GraphQL)
     for url in [
         f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis",
         f"https://www.instagram.com/reel/{shortcode}/?__a=1&__d=dis",
     ]:
         try:
             response = loader.context._session.get(url, timeout=10)
-            print(f"  [DEBUG] {shortcode} | status={response.status_code}")
             if response.status_code == 200:
                 data = response.json()
                 items = data.get("items", [])
@@ -131,22 +125,18 @@ def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
                         _full_metadata = item
                         likes          = item.get("like_count", 0)
                         comments       = item.get("comment_count", 0)
-                    print(f"  [OK-JSON] {shortcode} berhasil via endpoint JSON")
                     return MockPost()
-        except Exception as e:
-            print(f"  [WARN] endpoint JSON gagal: {e}")
+        except Exception:
+            pass
 
-    # Fallback ke GraphQL (Post.from_shortcode) — lebih lambat tapi lebih andal
-    print(f"  [FALLBACK] {shortcode} → mencoba via GraphQL/Post.from_shortcode")
+    # Fallback GraphQL
     try:
         post = instaloader.Post.from_shortcode(loader.context, shortcode)
         post._full_metadata_dict = None
-        print(f"  [OK-GQL] {shortcode} berhasil via GraphQL")
         return post
     except Exception as e:
-        print(f"  [FAIL] {shortcode} gagal total: {type(e).__name__}: {e}")
+        print(f"  [FAIL] {shortcode}: {type(e).__name__}")
 
-    # Jika semua gagal, return kosong
     class EmptyPost:
         is_video       = True
         _full_metadata = {}
@@ -213,17 +203,32 @@ def fetch_single(args):
 
     time.sleep(random.uniform(*delay_range))
 
-    try:
-        post = fetch_fresh_post(shortcode, loader)
-        total_views, views_organik, is_boosted = get_views_from_post(post)
-        with print_lock:
-            boost_status = "[BOOSTED]" if is_boosted else "[ORGANIC]"
-            print(f"  ✓ {shortcode}: Total:{total_views:,} | Ori:{views_organik:,} {boost_status}")
-        return index, total_views, views_organik, "ok", is_boosted
-    except Exception as e:
-        with print_lock:
-            print(f"  ✗ {shortcode} Error: {type(e).__name__}")
-        return index, 0, 0, "error", False
+    for attempt in range(2):  # maksimal 2 kali percobaan
+        try:
+            post = fetch_fresh_post(shortcode, loader)
+            total_views, views_organik, is_boosted = get_views_from_post(post)
+            
+            if total_views > 0:  # berhasil dapat data
+                with print_lock:
+                    boost_status = "[BOOSTED]" if is_boosted else "[ORGANIC]"
+                    print(f"  ✓ {shortcode}: Total:{total_views:,} | Ori:{views_organik:,} {boost_status}")
+                return index, total_views, views_organik, "ok", is_boosted
+            
+            if attempt == 0:
+                # Gagal dapat data, tunggu lebih lama lalu retry
+                with print_lock:
+                    print(f"  [RETRY] {shortcode} dapat 0, tunggu 15s lalu retry...")
+                time.sleep(15)
+
+        except Exception as e:
+            with print_lock:
+                print(f"  ✗ {shortcode} Error attempt {attempt+1}: {type(e).__name__}")
+            if attempt == 0:
+                time.sleep(15)
+
+    with print_lock:
+        print(f"  ✗ {shortcode}: gagal setelah 2 percobaan")
+    return index, 0, 0, "error", False
 
 
 # ─── BULK PARALLEL (DIUBAH MENJADI OPERASI ASYNC DENGAN SEMAPHORE) ───
@@ -440,3 +445,147 @@ def analyze_excel(spreadsheet_id: str, sheet_name: str, max_workers: int = 1, de
     except Exception as e:
         print(f"❌ Gagal memproses sheet via API: {type(e).__name__}: {e}")
         return {"status": "error", "pesan": f"Error tidak terduga: {str(e)}"}
+    
+def analyze_excel_batched(
+    spreadsheet_id: str,
+    sheet_name: str,
+    batch_size: int = 100,
+    max_workers: int = 3,
+    delay_range: tuple = (3.0, 6.0),
+    on_progress=None,
+):
+    try:
+        # STEP 1: Ambil data
+        if on_progress: on_progress(0, 1, 0, 1, "Membaca data dari Google Sheets...")
+        raw_rows = get_spreadsheet_values(spreadsheet_id, f"'{sheet_name}'!A1:ZZ")
+        if not raw_rows:
+            return {"status": "error", "pesan": f"Sheet '{sheet_name}' kosong."}
+
+        header    = raw_rows[0]
+        data_rows = raw_rows[1:]
+        max_cols  = len(header)
+        padded    = [r + [''] * (max_cols - len(r)) for r in data_rows]
+        df        = pd.DataFrame(padded, columns=header)
+
+        # STEP 2: Deteksi kolom
+        col_link        = next((c for c in df.columns if 'link post' in str(c).lower()), None)
+        col_imp         = next((c for c in df.columns if 'total imp by job(play count)' in str(c).lower()), None)
+        col_nama        = next((c for c in df.columns if 'kol name' in str(c).lower() or str(c).lower() == 'name'), None)
+        col_boost_excel = next((c for c in df.columns if 'boost' in str(c).lower()), None)
+        col_imp_ori_name = "TOTAL IMP ORGANIK(VIEW COUNT)"
+        col_status_name  = "STATUS(JOB)"
+
+        if not col_link:
+            return {"status": "error", "pesan": "Kolom 'link post' tidak ditemukan."}
+
+        def get_col_letter(i):
+            r, idx = "", i + 1
+            while idx > 0:
+                idx, rem = divmod(idx - 1, 26)
+                r = chr(65 + rem) + r
+            return r
+
+        col_letter_imp = get_col_letter(df.columns.get_loc(col_imp)) if col_imp else None
+
+        if col_imp_ori_name not in df.columns:
+            header.append(col_imp_ori_name)
+            update_spreadsheet_values(spreadsheet_id, [[col_imp_ori_name]], f"'{sheet_name}'!{get_col_letter(len(header)-1)}1")
+            df[col_imp_ori_name] = 0
+        col_letter_imp_ori = get_col_letter(df.columns.get_loc(col_imp_ori_name))
+
+        if col_status_name not in df.columns:
+            header.append(col_status_name)
+            update_spreadsheet_values(spreadsheet_id, [[col_status_name]], f"'{sheet_name}'!{get_col_letter(len(header)-1)}1")
+            df[col_status_name] = "[ORGANIC]"
+        col_letter_status = get_col_letter(df.columns.get_loc(col_status_name))
+
+        df[col_imp_ori_name] = 0
+        df[col_status_name]  = "[ORGANIC]"
+
+        # STEP 3: Kumpulkan URL valid
+        url_index_pairs = [
+            (idx, str(row[col_link]).strip())
+            for idx, row in df.iterrows()
+            if pd.notna(row[col_link]) and "instagram.com" in str(row[col_link])
+        ]
+        total_url = len(url_index_pairs)
+
+        if not url_index_pairs:
+            return {"status": "error", "pesan": "Tidak ada URL Instagram valid."}
+
+        # STEP 4: Proses per batch 100
+        loader = get_loader()
+        batches = [url_index_pairs[i:i+batch_size] for i in range(0, total_url, batch_size)]
+        total_batch = len(batches)
+        done_count  = 0
+
+        print(f"[BATCH] Total {total_url} URL → {total_batch} batch × {batch_size}")
+
+        for b_idx, batch in enumerate(batches):
+            if on_progress:
+                on_progress(done_count, total_url, b_idx, total_batch,
+                            f"Batch {b_idx+1}/{total_batch} — {done_count}/{total_url} URL selesai")
+
+            print(f"\n[BATCH {b_idx+1}/{total_batch}] Memproses {len(batch)} URL...")
+
+            results = asyncio.run(bulk_fetch_views_async(
+                batch, loader,
+                max_concurrent_tasks=max_workers,
+                delay_range=delay_range,
+            ))
+
+            # Update DataFrame
+            for idx, (total_views, views_organik, is_boosted_api, status) in results.items():
+                if col_imp:
+                    df.at[idx, col_imp] = total_views
+
+                is_boosted = is_boosted_api
+                if col_boost_excel and col_boost_excel in df.columns:
+                    val = str(df.at[idx, col_boost_excel]).strip().lower()
+                    if val in ['yes', 'y', 'true', 'boosting', '1']:
+                        is_boosted = True
+
+                df.at[idx, col_imp_ori_name] = views_organik if is_boosted else total_views
+                df.at[idx, col_status_name]  = "[BOOSTED]" if is_boosted else "[ORGANIC]"
+
+            # Tulis batch ini langsung ke Sheets (tidak tunggu semua selesai)
+            bulk = []
+            for idx, _ in batch:
+                gs_row = idx + 2
+                row    = df.loc[idx]
+                if col_letter_imp:
+                    bulk.append({'range': f"'{sheet_name}'!{col_letter_imp}{gs_row}", 'values': [[_safe_int_val(row.get(col_imp))]]})
+                bulk.append({'range': f"'{sheet_name}'!{col_letter_imp_ori}{gs_row}", 'values': [[_safe_int_val(row.get(col_imp_ori_name))]]})
+                val_s = str(row.get(col_status_name, "[ORGANIC]")).strip()
+                bulk.append({'range': f"'{sheet_name}'!{col_letter_status}{gs_row}", 'values': [[val_s if val_s and val_s.lower() != 'nan' else "[ORGANIC]"]]})
+
+            if bulk:
+                update_spreadsheet_values(spreadsheet_id, bulk)
+                print(f"[BATCH {b_idx+1}] ✅ Tulis {len(batch)} baris ke Sheets")
+
+            done_count += len(batch)
+
+            # Jeda antar batch agar tidak trigger rate limit Instagram
+            if b_idx < total_batch - 1:
+                jeda = random.uniform(10, 20)
+                print(f"[BATCH] Jeda {jeda:.0f}s sebelum batch berikutnya...")
+                if on_progress:
+                    on_progress(done_count, total_url, b_idx+1, total_batch,
+                                f"Jeda sebentar sebelum batch {b_idx+2}...")
+                time.sleep(jeda)
+
+        if on_progress:
+            on_progress(total_url, total_url, total_batch, total_batch, "Semua selesai!")
+
+        return {
+            "status":      "Success",
+            "total_baris": len(df),
+            "KOL NAME":    df[col_nama].fillna("").astype(str).tolist() if col_nama else [],
+            "TOTAL IMP":   [_safe_int_val(x) for x in df[col_imp].tolist()] if col_imp else [],
+            "TOTAL IMP original": [_safe_int_val(x) for x in df[col_imp_ori_name].tolist()],
+            "STATUS":      df[col_status_name].fillna("[ORGANIC]").astype(str).tolist(),
+        }
+
+    except Exception as e:
+        print(f"❌ Error: {type(e).__name__}: {e}")
+        return {"status": "error", "pesan": str(e)}
