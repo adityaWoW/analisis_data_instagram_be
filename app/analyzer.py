@@ -14,31 +14,38 @@ IG_USERNAME   = "Ace.Shuttle"
 # ─── LOAD INSTAGRAM COOKIES ───────────────────
 
 def load_instagram_cookies():
+    # Coba dari environment variable dulu (untuk HF Spaces)
+    cookies_env = os.environ.get("INSTAGRAM_COOKIES")
+    if cookies_env:
+        try:
+            cookies = json.loads(cookies_env)
+            cookie_map = {c["name"]: c["value"] for c in cookies}
+            print("✅ Cookies loaded dari environment variable")
+            return {
+                "sessionid":  cookie_map.get("sessionid", ""),
+                "csrftoken":  cookie_map.get("csrftoken", ""),
+                "ds_user_id": cookie_map.get("ds_user_id", ""),
+                "mid":        cookie_map.get("mid", ""),
+                "ig_did":     cookie_map.get("ig_did", ""),
+            }
+        except Exception as e:
+            print(f"⚠️ Gagal parse INSTAGRAM_COOKIES env: {e}")
+
+    # Fallback ke file lokal (untuk development)
     try:
-        with open(
-            "storage/cookies.json",
-            "r",
-            encoding="utf-8"
-        ) as f:
+        with open("storage/cookies.json", "r", encoding="utf-8") as f:
             cookies = json.load(f)
-
-        cookie_map = {
-            cookie["name"]: cookie["value"]
-            for cookie in cookies
-        }
-
+        cookie_map = {c["name"]: c["value"] for c in cookies}
+        print("✅ Cookies loaded dari file lokal")
         return {
-            "sessionid": cookie_map.get("sessionid", ""),
-            "csrftoken": cookie_map.get("csrftoken", ""),
+            "sessionid":  cookie_map.get("sessionid", ""),
+            "csrftoken":  cookie_map.get("csrftoken", ""),
             "ds_user_id": cookie_map.get("ds_user_id", ""),
-            "mid": cookie_map.get("mid", ""),
-            "ig_did": cookie_map.get("ig_did", ""),
+            "mid":        cookie_map.get("mid", ""),
+            "ig_did":     cookie_map.get("ig_did", ""),
         }
     except FileNotFoundError:
-        print("❌ Error: File 'storage/cookies.json' tidak ditemukan!")
-        return {}
-    except Exception as e:
-        print(f"❌ Error saat membaca cookies: {e}")
+        print("❌ cookies.json tidak ditemukan!")
         return {}
 
 # ─── LOADER SINGLETON ─────────────────────────────────────────
@@ -57,7 +64,7 @@ def get_loader() -> instaloader.Instaloader:
 
     L = instaloader.Instaloader(
         quiet=True,
-        request_timeout=30,
+        request_timeout=15,       # turunkan dari 30 → 15 detik
         download_pictures=False,
         download_videos=False,
         download_video_thumbnails=False,
@@ -70,8 +77,9 @@ def get_loader() -> instaloader.Instaloader:
 
     def fake_graphql_query(*args, **kwargs):
         print("[BYPASS] Membungkam otomatisasi GraphQL Query bawaan Instaloader.")
-        return {"data": {"user": {"username": IG_USERNAME}}} # Mengembalikan mock response sukses
-        
+        return {"data": {"user": {"username": IG_USERNAME}}}
+    
+    L.context.max_connection_attempts = 1    
     L.context.graphql_query = fake_graphql_query
     
     # Memasukkan seluruh value dari cookies.json ke session Instaloader
@@ -118,23 +126,41 @@ def extract_shortcode(url: str) -> str | None:
 
 
 def fetch_fresh_post(shortcode: str, loader: instaloader.Instaloader):
-    url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
-    response = loader.context._session.get(url)
-    if response.status_code == 200:
-        try:
-            data = response.json()
-            class MockPost:
-                is_video = True
-                _full_metadata = data['items'][0]
-                likes    = data['items'][0].get('like_count', 0)
-                comments = data['items'][0].get('comment_count', 0)
-            return MockPost()
-        except Exception:
-            pass
+    """
+    Ambil data post via endpoint non-GraphQL.
+    Tidak ada fallback ke Post.from_shortcode agar tidak trigger GraphQL timeout.
+    """
+    urls_to_try = [
+        f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis",
+        f"https://www.instagram.com/reel/{shortcode}/?__a=1&__d=dis",
+    ]
 
-    post = instaloader.Post.from_shortcode(loader.context, shortcode)
-    post._full_metadata_dict = None
-    return post
+    for url in urls_to_try:
+        try:
+            response = loader.context._session.get(url, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get("items", [])
+                if items:
+                    item = items[0]
+                    class MockPost:
+                        is_video = item.get("media_type", 1) in (2, 1)
+                        _full_metadata = item
+                        likes    = item.get("like_count", 0)
+                        comments = item.get("comment_count", 0)
+                    return MockPost()
+        except Exception as e:
+            print(f"  [WARN] {url} gagal: {e}")
+            continue
+
+    # Jika semua endpoint gagal, return mock kosong daripada GraphQL
+    print(f"  [SKIP] {shortcode} tidak bisa diambil, return 0")
+    class EmptyPost:
+        is_video = True
+        _full_metadata = {}
+        likes    = 0
+        comments = 0
+    return EmptyPost()
 
 
 def get_views_from_post(post) -> tuple[int, int, bool]:

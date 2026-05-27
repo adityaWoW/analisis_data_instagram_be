@@ -108,29 +108,22 @@ async def save_instagram_session(payload: dict):
     try:
         cookies = payload.get("cookies", [])
         IMPORTANT_COOKIES = ["sessionid", "csrftoken", "ds_user_id", "ig_did", "mid"]
+        filtered = [c for c in cookies if c.get("name") in IMPORTANT_COOKIES]
 
-        filtered = [
-            cookie for cookie in cookies
-            if cookie.get("name") in IMPORTANT_COOKIES
-        ]
+        # Simpan ke env var (untuk HF Spaces)
+        os.environ["INSTAGRAM_COOKIES"] = json.dumps(filtered)
 
-        # Selalu pastikan folder ada sebelum menulis file fisik
+        # Reset loader agar pakai cookies baru
+        global _loader_instance
+        _loader_instance = None  # ← import dari analyzer.py jika perlu
+
+        # Tetap simpan ke file untuk fallback lokal
         os.makedirs("storage", exist_ok=True)
-
-        # Menulis ulang file cookies secara berkala (menimpa yang lama)
         with open("storage/cookies.json", "w", encoding="utf-8") as f:
             json.dump(filtered, f, indent=2, ensure_ascii=False)
 
-        print(f"[INSTAGRAM] Session saved. Total cookies: {len(filtered)}")
-
-        return {
-            "success": True,
-            "message": "Instagram session saved successfully to storage/cookies.json",
-            "total": len(filtered)
-        }
-
+        return {"success": True, "message": "Session saved", "total": len(filtered)}
     except Exception as e:
-        print(f"[SAVE SESSION ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
